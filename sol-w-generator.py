@@ -17,15 +17,68 @@ from bip_utils import Bip39SeedGenerator
 # --- End Corrected Imports ---
 
 # --- 配置 ---
-TARGET_COUNT = 2  # 目标生成2个"test"开头的钱包
-NUM_PROCESSES = 3  # 使用两个核心
-OUTPUT_FILENAME = 'sol-w-import.csv' # New filename
+TARGET_COUNT = 1  # 目标生成数量
+NUM_PROCESSES = 3  # 使用进程数
+OUTPUT_FILENAME = 'sol-w-import.csv' # 输出文件名
 MNEMONIC_LANGUAGE = 'english'
 MNEMONIC_STRENGTH = 256 # 24 words
 # The derivation path Phantom uses
 DERIVATION_PATH = "m/44'/501'/0'/0'"
-TARGET_PREFIX = 'test'  # 目标前缀（不区分大小写）
-# --- 结束配置 ---
+
+# ===== 新增配置选项 =====
+# 选择生成模式：'lowercase', 'uppercase', 'custom'
+GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
+
+# 当GENERATION_MODE为'custom'时，使用下面的自定义前缀
+CUSTOM_PREFIX = 'test'
+
+# 当GENERATION_MODE为'lowercase'时，生成的前缀长度
+LOWERCASE_PREFIX_LENGTH = 4  # 生成4位全小写字母开头
+
+# 当GENERATION_MODE为'uppercase'时，生成的前缀长度  
+UPPERCASE_PREFIX_LENGTH = 4  # 生成4位全大写字母开头
+# ===== 配置结束 =====
+
+def is_all_lowercase_letters(s):
+    """检查字符串是否全为小写字母"""
+    return s.islower() and s.isalpha()
+
+def is_all_uppercase_letters(s):
+    """检查字符串是否全为大写字母"""
+    return s.isupper() and s.isalpha()
+
+def check_address_match(address):
+    """
+    根据配置的生成模式检查地址是否匹配条件
+    """
+    if GENERATION_MODE == 'lowercase':
+        # 检查前N位是否全为小写字母
+        prefix = address[:LOWERCASE_PREFIX_LENGTH]
+        return is_all_lowercase_letters(prefix)
+    
+    elif GENERATION_MODE == 'uppercase':
+        # 检查前N位是否全为大写字母
+        prefix = address[:UPPERCASE_PREFIX_LENGTH]
+        return is_all_uppercase_letters(prefix)
+    
+    elif GENERATION_MODE == 'custom':
+        # 检查是否以自定义前缀开头（不区分大小写）
+        return address.lower().startswith(CUSTOM_PREFIX.lower())
+    
+    else:
+        print(f"错误：未知的生成模式 '{GENERATION_MODE}'")
+        return False
+
+def get_target_description():
+    """获取目标描述文本"""
+    if GENERATION_MODE == 'lowercase':
+        return f"前{LOWERCASE_PREFIX_LENGTH}位全小写字母"
+    elif GENERATION_MODE == 'uppercase':
+        return f"前{UPPERCASE_PREFIX_LENGTH}位全大写字母"
+    elif GENERATION_MODE == 'custom':
+        return f"以'{CUSTOM_PREFIX}'开头"
+    else:
+        return "未知条件"
 
 def generate_solana_wallet_from_mnemonic():
     """
@@ -82,8 +135,8 @@ def worker_process(process_id, result_queue, found_count, total_attempts):
             address, mnemonic_phrase = generate_solana_wallet_from_mnemonic()
             
             if address and mnemonic_phrase:
-                # 检查地址是否以目标前缀开头（不区分大小写）
-                if address.lower().startswith(TARGET_PREFIX.lower()):
+                # 使用新的检查函数
+                if check_address_match(address):
                     # 使用锁确保原子操作
                     with found_count.get_lock():
                         if found_count.value < TARGET_COUNT:
@@ -100,7 +153,7 @@ def worker_process(process_id, result_queue, found_count, total_attempts):
             print(f"进程 {process_id} 发生错误: {e}")
             continue
         
-        # 每10000次尝试进行一次垃圾回收
+        # 每300000次尝试进行一次垃圾回收
         if local_attempts % 300000 == 0:
             gc.collect()
             if found_count.value >= TARGET_COUNT:
@@ -108,9 +161,11 @@ def worker_process(process_id, result_queue, found_count, total_attempts):
 
 def main():
     """
-    主函数，使用多进程生成以"test"开头的钱包并将其保存到 CSV 文件。
+    主函数，使用多进程生成满足条件的钱包并将其保存到 CSV 文件。
     """
-    print(f"开始使用 {NUM_PROCESSES} 个进程生成以'{TARGET_PREFIX}'开头的 Solana 钱包 (目标数量: {TARGET_COUNT})...")
+    target_desc = get_target_description()
+    print(f"开始使用 {NUM_PROCESSES} 个进程生成{target_desc}的 Solana 钱包 (目标数量: {TARGET_COUNT})...")
+    print(f"生成模式: {GENERATION_MODE}")
     print(f"派生库: bip_utils.bip.bip32.Bip32Slip10Ed25519")
     print(f"派生路径: {DERIVATION_PATH} (Phantom 兼容)")
     
@@ -144,12 +199,12 @@ def main():
         
         current_time = time.time()
         
-        # 每30秒在主进程中也进行一次垃圾回收
+        # 每600秒在主进程中也进行一次垃圾回收
         if current_time - last_gc_time >= 600:
             gc.collect()
             last_gc_time = current_time
         
-        # 每5秒报告一次进度
+        # 每30秒报告一次进度
         if current_time - last_report_time >= 30:
             elapsed_time = current_time - start_time
             current_attempts = total_attempts.value
@@ -166,7 +221,7 @@ def main():
         p.join()
     
     final_attempts = total_attempts.value
-    print(f"\n成功找到 {TARGET_COUNT} 个以'{TARGET_PREFIX}'开头的钱包！")
+    print(f"\n成功找到 {TARGET_COUNT} 个{target_desc}的钱包！")
     print(f"总共尝试了 {final_attempts} 次")
     
     if not wallets_data:
@@ -197,6 +252,7 @@ def main():
     
     total_time = time.time() - start_time
     print("\n--- 生成完成 ---")
+    print(f"目标条件: {target_desc}")
     print(f"目标数量: {TARGET_COUNT} 个")
     print(f"成功生成并写入: {saved_count} 个")
     print(f"总尝试次数: {final_attempts} 次")  
