@@ -49,10 +49,26 @@ python sol-w-generator.py
 
 ```python
 # --- 配置 ---
-TARGET_COUNT = 5          # 目标生成数量
-NUM_PROCESSES = 2         # 使用的CPU核心数
-TARGET_PREFIX = 'ryan'    # 目标前缀（不区分大小写）
-OUTPUT_FILENAME = 'sol-w-import.csv'  # 输出文件名
+TARGET_COUNT = 1  # 目标生成数量
+NUM_PROCESSES = 3  # 使用进程数
+OUTPUT_FILENAME = 'sol-w-import.csv' # 输出文件名
+MNEMONIC_LANGUAGE = 'english'
+MNEMONIC_STRENGTH = 256 # 24 words
+# The derivation path Phantom uses
+DERIVATION_PATH = "m/44'/501'/0'/0'"
+
+# ===== 新增配置选项 =====
+# 选择生成模式：'lowercase', 'uppercase', 'custom'
+GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
+
+# 当GENERATION_MODE为'custom'时，使用下面的自定义前缀
+CUSTOM_PREFIX = 'test'
+
+# 当GENERATION_MODE为'lowercase'时，生成的前缀长度
+LOWERCASE_PREFIX_LENGTH = 4  # 生成4位全小写字母开头
+
+# 当GENERATION_MODE为'uppercase'时，生成的前缀长度  
+UPPERCASE_PREFIX_LENGTH = 4  # 生成4位全大写字母开头
 ```
 
 ## 输出格式
@@ -68,6 +84,7 @@ OUTPUT_FILENAME = 'sol-w-import.csv'  # 输出文件名
 - **单进程模式**：约 2.4 秒生成 1000 个地址
 - **双进程模式**：约 1.2 秒生成 1000 个地址
 - **内存优化**：自动垃圾回收，避免长时间运行内存泄漏
+- **生成速度**：三进程模式，约1小时生成一个前缀4字母不限大小写的地址
 
 ### 关于前缀匹配概率
 
