@@ -25,7 +25,7 @@ DERIVATION_PATH = "m/44'/501'/0'/0'"
 # ===== 新增配置选项 =====
 GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
 CASE_SENSITIVE = True  # 设置为True时严格匹配大小写，False时忽略大小写
-CUSTOM_PREFIX = 'Ryan'
+CUSTOM_PREFIX = 'test'
 LOWERCASE_PREFIX_LENGTH = 4  
 UPPERCASE_PREFIX_LENGTH = 4  
 
