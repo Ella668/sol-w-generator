@@ -4,70 +4,54 @@ import time
 import traceback
 import multiprocessing
 import gc
-from multiprocessing import Process, Queue, Value
+from multiprocessing import Process, Queue, Value, shared_memory
 from solders.keypair import Keypair
 from mnemonic import Mnemonic
 # --- Corrected bip_utils Imports ---
-# Import the specific class from the bip.bip32 submodule
 from bip_utils.bip.bip32 import Bip32Slip10Ed25519
-# Import the error class from the bip.bip44_base submodule
 from bip_utils.bip.bip44_base import Bip44DepthError
-# Bip39SeedGenerator is still needed and correctly imported from top level
 from bip_utils import Bip39SeedGenerator
 # --- End Corrected Imports ---
 
 # --- 配置 ---
 TARGET_COUNT = 1  # 目标生成数量
-NUM_PROCESSES = 3  # 使用进程数
+# 动态调整进程数：使用CPU核心数但限制最大值
+NUM_PROCESSES = min(multiprocessing.cpu_count(), 8)  # 最多8个进程
 OUTPUT_FILENAME = 'sol-w-import.csv' # 输出文件名
 MNEMONIC_LANGUAGE = 'english'
 MNEMONIC_STRENGTH = 256 # 24 words
-# The derivation path Phantom uses
 DERIVATION_PATH = "m/44'/501'/0'/0'"
 
 # ===== 新增配置选项 =====
-# 选择生成模式：'lowercase', 'uppercase', 'custom'
 GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
-
-# 当GENERATION_MODE为'custom'时，使用下面的自定义前缀
-CUSTOM_PREFIX = 'test'
-
-# 当GENERATION_MODE为'lowercase'时，生成的前缀长度
-LOWERCASE_PREFIX_LENGTH = 4  # 生成4位全小写字母开头
-
-# 当GENERATION_MODE为'uppercase'时，生成的前缀长度  
-UPPERCASE_PREFIX_LENGTH = 4  # 生成4位全大写字母开头
+CUSTOM_PREFIX = 'test' # 把 test 改成你想生成的地址前缀
+LOWERCASE_PREFIX_LENGTH = 4  
+UPPERCASE_PREFIX_LENGTH = 4  
 # ===== 配置结束 =====
 
-def is_all_lowercase_letters(s):
-    """检查字符串是否全为小写字母"""
-    return s.islower() and s.isalpha()
+# 预编译正则表达式和常量
+import re
+if GENERATION_MODE == 'lowercase':
+    LOWERCASE_PATTERN = re.compile(r'^[a-z]{' + str(LOWERCASE_PREFIX_LENGTH) + r'}')
+elif GENERATION_MODE == 'uppercase':
+    UPPERCASE_PATTERN = re.compile(r'^[A-Z]{' + str(UPPERCASE_PREFIX_LENGTH) + r'}')
+elif GENERATION_MODE == 'custom':
+    CUSTOM_PREFIX_LOWER = CUSTOM_PREFIX.lower()
+    CUSTOM_PREFIX_LEN = len(CUSTOM_PREFIX)
 
-def is_all_uppercase_letters(s):
-    """检查字符串是否全为大写字母"""
-    return s.isupper() and s.isalpha()
-
-def check_address_match(address):
+def check_address_match_optimized(address):
     """
-    根据配置的生成模式检查地址是否匹配条件
+    优化的地址匹配检查，使用预编译的模式
     """
     if GENERATION_MODE == 'lowercase':
-        # 检查前N位是否全为小写字母
-        prefix = address[:LOWERCASE_PREFIX_LENGTH]
-        return is_all_lowercase_letters(prefix)
-    
+        return bool(LOWERCASE_PATTERN.match(address))
     elif GENERATION_MODE == 'uppercase':
-        # 检查前N位是否全为大写字母
-        prefix = address[:UPPERCASE_PREFIX_LENGTH]
-        return is_all_uppercase_letters(prefix)
-    
+        return bool(UPPERCASE_PATTERN.match(address))
     elif GENERATION_MODE == 'custom':
-        # 检查是否以自定义前缀开头（不区分大小写）
-        return address.lower().startswith(CUSTOM_PREFIX.lower())
-    
-    else:
-        print(f"错误：未知的生成模式 '{GENERATION_MODE}'")
-        return False
+        # 直接比较前缀，避免创建新字符串
+        return (len(address) >= CUSTOM_PREFIX_LEN and 
+                address[:CUSTOM_PREFIX_LEN].lower() == CUSTOM_PREFIX_LOWER)
+    return False
 
 def get_target_description():
     """获取目标描述文本"""
@@ -80,207 +64,277 @@ def get_target_description():
     else:
         return "未知条件"
 
-def generate_solana_wallet_from_mnemonic():
-    """
-    Generates a Solana wallet address and its corresponding BIP39 mnemonic,
-    using bip_utils.bip.bip32.Bip32Slip10Ed25519 to match Phantom wallet derivation.
-    """
-    try:
-        # 1. Generate Mnemonic
-        mnemo = Mnemonic(MNEMONIC_LANGUAGE)
-        mnemonic_phrase = mnemo.generate(strength=MNEMONIC_STRENGTH)
-        
-        # 2. Generate BIP39 Seed from Mnemonic
-        seed_bytes = Bip39SeedGenerator(mnemonic_phrase).Generate("") # Empty passphrase
-        
-        # 3. Derive the Private Key using Bip32Slip10Ed25519
-        # Create a master key object from the seed using the specific class (now correctly imported)
-        master_key = Bip32Slip10Ed25519.FromSeed(seed_bytes)
-        
-        # Derive the key for the specified path using the DerivePath method
-        derived_key_ctx = master_key.DerivePath(DERIVATION_PATH)
-        
-        # Get the 32-byte private key from the derived context
-        derived_private_key = derived_key_ctx.PrivateKey().Raw().ToBytes()
-        
-        # 4. Create Solana Keypair from the derived 32-byte private key
-        keypair = Keypair.from_seed(derived_private_key)
-        
-        # 5. Get the public key (address)
-        address = str(keypair.pubkey())
-        
-        return address, mnemonic_phrase
-        
-    except Bip44DepthError as e: # Bip44DepthError is now correctly imported
-        print(f"\nError deriving path '{DERIVATION_PATH}': {e}")
-        print("Please ensure the derivation path format is correct.")
-        print(traceback.format_exc())
-        return None, None
-        
-    except Exception as e:
-        print(f"\nError generating single wallet:")
-        print(traceback.format_exc())
-        return None, None
-
-def worker_process(process_id, result_queue, found_count, total_attempts):
-    """
-    工作进程函数，持续生成钱包直到主进程停止
-    """
-    local_attempts = 0
+class WalletGenerator:
+    """钱包生成器类，减少重复初始化开销"""
     
-    while found_count.value < TARGET_COUNT:
+    def __init__(self):
+        self.mnemo = Mnemonic(MNEMONIC_LANGUAGE)
+        # 预解析派生路径
+        self.derivation_path = DERIVATION_PATH
+    
+    def generate_wallet(self):
+        """
+        优化的钱包生成方法
+        """
+        try:
+            # 1. 生成助记词
+            mnemonic_phrase = self.mnemo.generate(strength=MNEMONIC_STRENGTH)
+            
+            # 2. 生成种子
+            seed_bytes = Bip39SeedGenerator(mnemonic_phrase).Generate("")
+            
+            # 3. 派生私钥
+            master_key = Bip32Slip10Ed25519.FromSeed(seed_bytes)
+            derived_key_ctx = master_key.DerivePath(self.derivation_path)
+            derived_private_key = derived_key_ctx.PrivateKey().Raw().ToBytes()
+            
+            # 4. 创建Solana密钥对
+            keypair = Keypair.from_seed(derived_private_key)
+            address = str(keypair.pubkey())
+            
+            return address, mnemonic_phrase
+            
+        except Exception as e:
+            return None, None
+
+def worker_process_optimized(process_id, result_queue, found_count, total_attempts):
+    """
+    优化的工作进程函数
+    """
+    # 每个进程创建自己的生成器实例
+    generator = WalletGenerator()
+    local_attempts = 0
+    local_found = 0
+    batch_size = 1000  # 批量更新计数器
+    
+    print(f"进程 {process_id} 启动")
+    
+    while True:
+        # 批量检查是否达到目标
+        if local_attempts % batch_size == 0:
+            with found_count.get_lock():
+                if found_count.value >= TARGET_COUNT:
+                    break
+        
         local_attempts += 1
         
         try:
-            address, mnemonic_phrase = generate_solana_wallet_from_mnemonic()
+            address, mnemonic_phrase = generator.generate_wallet()
             
             if address and mnemonic_phrase:
-                # 使用新的检查函数
-                if check_address_match(address):
+                if check_address_match_optimized(address):
                     # 使用锁确保原子操作
                     with found_count.get_lock():
                         if found_count.value < TARGET_COUNT:
                             found_count.value += 1
                             current_found = found_count.value
-                            result_queue.put({'Address': address, 'Mnemonic': mnemonic_phrase})
-                            print(f"进程 {process_id}: 找到第 {current_found} 个匹配的钱包: {address}")
+                            local_found += 1
+                            result_queue.put({
+                                'Address': address, 
+                                'Mnemonic': mnemonic_phrase,
+                                'Process': process_id
+                            })
+                            print(f"🎯 进程 {process_id}: 找到第 {current_found} 个匹配钱包: {address}")
+                            
+                            if current_found >= TARGET_COUNT:
+                                break
             
-            # 更新总尝试次数
-            with total_attempts.get_lock():
-                total_attempts.value += 1
-                
         except Exception as e:
-            print(f"进程 {process_id} 发生错误: {e}")
             continue
         
-        # 每300000次尝试进行一次垃圾回收
-        if local_attempts % 300000 == 0:
+        # 批量更新总尝试次数，减少锁竞争
+        if local_attempts % batch_size == 0:
+            with total_attempts.get_lock():
+                total_attempts.value += local_attempts
+                local_attempts = 0
+        
+        # 定期垃圾回收，但频率降低
+        if (local_attempts + local_found * batch_size) % 500000 == 0:
             gc.collect()
-            if found_count.value >= TARGET_COUNT:
-                break
+    
+    # 最终更新剩余的尝试次数
+    if local_attempts > 0:
+        with total_attempts.get_lock():
+            total_attempts.value += local_attempts
+    
+    print(f"进程 {process_id} 完成，本地找到: {local_found} 个")
+
+def monitor_progress(start_time, total_attempts, found_count, target_count):
+    """独立的进度监控函数"""
+    last_attempts = 0
+    last_time = start_time
+    
+    while found_count.value < target_count:
+        time.sleep(10)  # 每10秒报告一次
+        
+        current_time = time.time()
+        current_attempts = total_attempts.value
+        elapsed_time = current_time - start_time
+        
+        # 计算速率
+        attempts_diff = current_attempts - last_attempts
+        time_diff = current_time - last_time
+        current_rate = attempts_diff / time_diff if time_diff > 0 else 0
+        overall_rate = current_attempts / elapsed_time if elapsed_time > 0 else 0
+        
+        print(f"📊 进度报告: 尝试 {current_attempts:,} 次 | "
+              f"找到 {found_count.value}/{target_count} | "
+              f"用时 {elapsed_time:.1f}s | "
+              f"当前速率: {current_rate:.0f}/s | "
+              f"平均速率: {overall_rate:.0f}/s")
+        
+        last_attempts = current_attempts
+        last_time = current_time
+        
+        if found_count.value >= target_count:
+            break
 
 def main():
-    """
-    主函数，使用多进程生成满足条件的钱包并将其保存到 CSV 文件。
-    """
+    """优化的主函数"""
     target_desc = get_target_description()
-    print(f"开始使用 {NUM_PROCESSES} 个进程生成{target_desc}的 Solana 钱包 (目标数量: {TARGET_COUNT})...")
-    print(f"生成模式: {GENERATION_MODE}")
-    print(f"派生库: bip_utils.bip.bip32.Bip32Slip10Ed25519")
-    print(f"派生路径: {DERIVATION_PATH} (Phantom 兼容)")
+    print(f"🚀 启动优化版 Solana 钱包生成器")
+    print(f"📋 配置信息:")
+    print(f"   - 目标条件: {target_desc}")
+    print(f"   - 目标数量: {TARGET_COUNT}")
+    print(f"   - 使用进程: {NUM_PROCESSES} 个 (CPU核心: {multiprocessing.cpu_count()})")
+    print(f"   - 生成模式: {GENERATION_MODE}")
+    print(f"   - 派生路径: {DERIVATION_PATH}")
+    print(f"   - 输出文件: {OUTPUT_FILENAME}")
     
     start_time = time.time()
     
     # 创建共享变量和队列
-    result_queue = Queue()
-    found_count = Value('i', 0)  # 已找到的钱包数量
-    total_attempts = Value('i', 0)  # 总尝试次数
+    result_queue = Queue(maxsize=100)  # 限制队列大小
+    found_count = Value('i', 0)
+    total_attempts = Value('i', 0)
     
     # 创建并启动工作进程
     processes = []
     for i in range(NUM_PROCESSES):
-        p = Process(target=worker_process, args=(i+1, result_queue, found_count, total_attempts))
+        p = Process(
+            target=worker_process_optimized, 
+            args=(i+1, result_queue, found_count, total_attempts)
+        )
         p.start()
         processes.append(p)
     
+    # 启动进度监控进程
+    monitor_process = Process(
+        target=monitor_progress,
+        args=(start_time, total_attempts, found_count, TARGET_COUNT)
+    )
+    monitor_process.start()
+    
     # 收集结果
     wallets_data = []
-    last_report_time = start_time
-    last_gc_time = start_time
+    timeout_count = 0
+    max_timeout = 5  # 最大超时次数
+    
+    print(f"⏳ 开始生成钱包...")
     
     while len(wallets_data) < TARGET_COUNT:
         try:
-            # 等待结果，设置超时避免无限等待
-            wallet_data = result_queue.get(timeout=1)
+            wallet_data = result_queue.get(timeout=2)
             wallets_data.append(wallet_data)
+            timeout_count = 0  # 重置超时计数
+            
+            # 显示找到的钱包
+            print(f"✅ 收集到钱包 {len(wallets_data)}/{TARGET_COUNT}: {wallet_data['Address']}")
+            
         except:
-            # 超时或其他异常，继续等待
-            pass
-        
-        current_time = time.time()
-        
-        # 每600秒在主进程中也进行一次垃圾回收
-        if current_time - last_gc_time >= 600:
-            gc.collect()
-            last_gc_time = current_time
-        
-        # 每30秒报告一次进度
-        if current_time - last_report_time >= 30:
-            elapsed_time = current_time - start_time
-            current_attempts = total_attempts.value
-            rate = current_attempts / elapsed_time if elapsed_time > 0 else 0
-            print(f"进度: 已尝试 {current_attempts} 次 | "
-                  f"找到: {len(wallets_data)}/{TARGET_COUNT} | "
-                  f"耗时: {elapsed_time:.2f} 秒 | "
-                  f"速率: {rate:.2f} 次/秒")
-            last_report_time = current_time
+            timeout_count += 1
+            if timeout_count >= max_timeout:
+                # 检查进程是否都还活着
+                alive_processes = [p for p in processes if p.is_alive()]
+                if not alive_processes:
+                    print("⚠️  所有工作进程已结束，但未达到目标数量")
+                    break
+                timeout_count = 0
+            continue
     
-    # 终止所有进程
+    # 清理进程
+    print("🛑 停止所有进程...")
+    monitor_process.terminate()
+    
     for p in processes:
         p.terminate()
-        p.join()
+        p.join(timeout=2)
+        if p.is_alive():
+            p.kill()  # 强制终止
     
+    monitor_process.join(timeout=2)
+    if monitor_process.is_alive():
+        monitor_process.kill()
+    
+    # 最终统计
     final_attempts = total_attempts.value
-    print(f"\n成功找到 {TARGET_COUNT} 个{target_desc}的钱包！")
-    print(f"总共尝试了 {final_attempts} 次")
+    total_time = time.time() - start_time
+    success_count = len(wallets_data)
+    
+    print(f"\n🎉 生成完成!")
+    print(f"📊 最终统计:")
+    print(f"   - 成功生成: {success_count}/{TARGET_COUNT} 个钱包")
+    print(f"   - 总尝试次数: {final_attempts:,} 次")
+    print(f"   - 总耗时: {total_time:.2f} 秒")
+    print(f"   - 平均速率: {final_attempts/total_time:.0f} 次/秒")
+    
+    if success_count > 0:
+        success_rate = success_count / final_attempts * 100 if final_attempts > 0 else 0
+        print(f"   - 成功率: {success_rate:.8f}%")
     
     if not wallets_data:
-        print("未能生成任何钱包数据，无法写入 CSV 文件。")
+        print("❌ 未生成任何钱包数据")
         return
     
-    print(f"\n开始将 {len(wallets_data)} 个钱包数据写入 {OUTPUT_FILENAME}...")
+    # 写入CSV文件
+    print(f"\n💾 保存数据到 {OUTPUT_FILENAME}...")
     write_start_time = time.time()
-    saved_count = 0
     
     try:
         with open(OUTPUT_FILENAME, 'w', newline='', encoding='utf-8') as csvfile:
             fieldnames = ['Address', 'Mnemonic']
             writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(wallets_data)
-            saved_count = len(wallets_data)
+            
+            for wallet in wallets_data:
+                writer.writerow({
+                    'Address': wallet['Address'],
+                    'Mnemonic': wallet['Mnemonic']
+                })
         
-        write_elapsed_time = time.time() - write_start_time
-        print(f"数据成功写入 {OUTPUT_FILENAME} (耗时: {write_elapsed_time:.2f} 秒)")
+        write_time = time.time() - write_start_time
+        file_path = os.path.abspath(OUTPUT_FILENAME)
         
-    except IOError as e:
-        print(f"写入 CSV 文件时出错: {e}")
-        print("请检查文件权限或路径是否正确。")
+        print(f"✅ 数据保存成功!")
+        print(f"   - 文件路径: {file_path}")
+        print(f"   - 保存耗时: {write_time:.2f} 秒")
+        print(f"   - 钱包数量: {len(wallets_data)} 个")
+        
+        print(f"\n🔑 生成的钱包地址:")
+        for i, wallet in enumerate(wallets_data, 1):
+            print(f"   {i}. {wallet['Address']}")
         
     except Exception as e:
-        print(f"写入 CSV 时发生未知错误: {e}")
-    
-    total_time = time.time() - start_time
-    print("\n--- 生成完成 ---")
-    print(f"目标条件: {target_desc}")
-    print(f"目标数量: {TARGET_COUNT} 个")
-    print(f"成功生成并写入: {saved_count} 个")
-    print(f"总尝试次数: {final_attempts} 次")  
-    print(f"使用进程数: {NUM_PROCESSES} 个")
-    
-    if saved_count > 0:
-        print(f"数据已保存到: {os.path.abspath(OUTPUT_FILENAME)}")
-        print("\n生成的钱包地址:")
-        for wallet in wallets_data:
-            print(f"  {wallet['Address']}")
-    
-    print(f"总耗时: {total_time:.2f} 秒")
+        print(f"❌ 保存文件时出错: {e}")
 
 if __name__ == "__main__":
-    # Installation check - verify the deeper import paths work
+    # 安装检查
     try:
         import solders
         import mnemonic
         import bip_utils
-        # Verify specific class imports from sub-submodules
         from bip_utils.bip.bip32 import Bip32Slip10Ed25519
         from bip_utils.bip.bip44_base import Bip44DepthError
     except ImportError as e:
-        print(f"错误：缺少必要的库或子模块无法访问 ({e})。请确保已安装最新版本:")
-        print("python3 -m pip install --upgrade bip-utils solders mnemonic")
+        print(f"❌ 缺少必要的库: {e}")
+        print("请运行: python3 -m pip install --upgrade bip-utils solders mnemonic")
         exit(1)
     
-    # 设置多进程启动方法（Windows兼容性）
-    multiprocessing.set_start_method('spawn', force=True)
+    # 设置多进程启动方法
+    if hasattr(multiprocessing, 'set_start_method'):
+        try:
+            multiprocessing.set_start_method('fork', force=True)  # macOS上fork更快
+        except RuntimeError:
+            multiprocessing.set_start_method('spawn', force=True)  # 备选方案
     
     main()
