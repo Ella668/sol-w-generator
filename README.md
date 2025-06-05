@@ -60,6 +60,7 @@ DERIVATION_PATH = "m/44'/501'/0'/0'"
 
 # ===== 新增配置选项 =====
 GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
+CASE_SENSITIVE = True  # 设置为True时严格匹配大小写，False时忽略大小写
 CUSTOM_PREFIX = 'test' 将 test 改成你要生成的钱包前缀
 # 当GENERATION_MODE为'lowercase'时，生成的前缀长度
 LOWERCASE_PREFIX_LENGTH = 4  # 生成4位全小写字母开头
