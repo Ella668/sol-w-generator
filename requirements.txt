@@ -1,0 +1,8 @@
+# Solana 钱包生成器依赖库
+# 核心加密和区块链库
+solders>=0.18.0
+bip-utils>=2.9.0
+mnemonic>=0.20
+
+# 系统和工具库（通常已预装，但列出确保兼容性）
+multiprocessing-logging>=0.3.4
