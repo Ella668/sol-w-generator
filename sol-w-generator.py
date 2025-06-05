@@ -24,9 +24,11 @@ DERIVATION_PATH = "m/44'/501'/0'/0'"
 
 # ===== 新增配置选项 =====
 GENERATION_MODE = 'custom'  # 可选: 'lowercase', 'uppercase', 'custom'
-CUSTOM_PREFIX = 'test' # 把 test 改成你想生成的地址前缀
+CASE_SENSITIVE = True  # 设置为True时严格匹配大小写，False时忽略大小写
+CUSTOM_PREFIX = 'Ryan'
 LOWERCASE_PREFIX_LENGTH = 4  
 UPPERCASE_PREFIX_LENGTH = 4  
+
 # ===== 配置结束 =====
 
 # 预编译正则表达式和常量
@@ -36,21 +38,35 @@ if GENERATION_MODE == 'lowercase':
 elif GENERATION_MODE == 'uppercase':
     UPPERCASE_PATTERN = re.compile(r'^[A-Z]{' + str(UPPERCASE_PREFIX_LENGTH) + r'}')
 elif GENERATION_MODE == 'custom':
-    CUSTOM_PREFIX_LOWER = CUSTOM_PREFIX.lower()
+    if CASE_SENSITIVE:
+        # 严格匹配大小写
+        CUSTOM_PREFIX_EXACT = CUSTOM_PREFIX
+    else:
+        # 忽略大小写
+        CUSTOM_PREFIX_LOWER = CUSTOM_PREFIX.lower()
     CUSTOM_PREFIX_LEN = len(CUSTOM_PREFIX)
 
 def check_address_match_optimized(address):
     """
-    优化的地址匹配检查，使用预编译的模式
+    优化的地址匹配检查，支持严格大小写匹配
     """
     if GENERATION_MODE == 'lowercase':
         return bool(LOWERCASE_PATTERN.match(address))
     elif GENERATION_MODE == 'uppercase':
         return bool(UPPERCASE_PATTERN.match(address))
     elif GENERATION_MODE == 'custom':
-        # 直接比较前缀，避免创建新字符串
-        return (len(address) >= CUSTOM_PREFIX_LEN and 
-                address[:CUSTOM_PREFIX_LEN].lower() == CUSTOM_PREFIX_LOWER)
+        if len(address) < CUSTOM_PREFIX_LEN:
+            return False
+        
+        address_prefix = address[:CUSTOM_PREFIX_LEN]
+        
+        if CASE_SENSITIVE:
+            # 严格匹配大小写
+            return address_prefix == CUSTOM_PREFIX_EXACT
+        else:
+            # 忽略大小写匹配
+            return address_prefix.lower() == CUSTOM_PREFIX_LOWER
+    
     return False
 
 def get_target_description():
@@ -60,7 +76,8 @@ def get_target_description():
     elif GENERATION_MODE == 'uppercase':
         return f"前{UPPERCASE_PREFIX_LENGTH}位全大写字母"
     elif GENERATION_MODE == 'custom':
-        return f"以'{CUSTOM_PREFIX}'开头"
+        case_desc = "严格匹配大小写" if CASE_SENSITIVE else "忽略大小写"
+        return f"以'{CUSTOM_PREFIX}'开头 ({case_desc})"
     else:
         return "未知条件"
 
